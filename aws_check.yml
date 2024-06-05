@@ -1,0 +1,17 @@
+---
+- name: Checking AWS for instances
+  hosts: localhost
+  gather_facts: true
+
+  tasks:
+
+    - name: Ensure Region is set
+      shell: export AWS_DEFAULT_REGION=us-east-1  
+
+    - name: Checking instances
+      command: aws ec2 describe-instances --filters "Name=instance-type,Values=t2.micro" --query "Reservations[*].Instances[*].[InstanceId]" --output table
+      register: aws_instances
+
+    - name: 
+      debug:
+        msg: "{{ aws_instances }}"

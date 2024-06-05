@@ -1,0 +1,66 @@
+
+provider "aws" {
+  access_key = "${var.access_key}"
+  secret_key = "${var.secret_key}"
+  region     = "${var.region}"
+  token      = "${var.token}"
+  default_tags {
+    tags = {
+      Environment = "terraform_dev"
+      Owner       = "Nuno dev"
+    }
+  }
+}
+
+data "aws_subnet_ids" "production" {
+  vpc_id = var.vpc_id
+
+  tags = {
+    Tier = "production"
+  }
+}
+
+resource "aws_security_group" "terraform_group" {
+  name        = "${var.aws_security_group}"
+  description = "Used in the Application Servers"
+  vpc_id      = "${var.vpc_id}"
+
+  # SSH access from anywhere
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks     = ["0.0.0.0/0"]
+  
+  }
+
+  # HTTP access from the VPC
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks     = ["0.0.0.0/0"]
+  }
+
+    egress {
+    from_port       = 0
+    to_port         = 0
+    protocol        = "-1"
+    cidr_blocks     = ["0.0.0.0/0"]
+    }
+}
+
+resource "aws_instance" "rhel_basic" {
+  for_each      = data.aws_subnet_ids.production.ids
+  ami           = "{{ ami_number }}"
+  instance_type = "{{ instance_type }}"
+  subnet_id     = each.value
+  key_name   = "terraform_prov"
+  user_data = file("./cloud-init.conf")
+  tags = {
+      Name = "${var.instance_names}"
+#      Role = "${var.instance_roles}"
+  }
+}

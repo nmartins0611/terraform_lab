@@ -1,0 +1,10 @@
+instance_type: 
+instance_name: 
+instance_sec: 
+instruqt_tf_build:
+working_dir: /tmp/srv/
+templates_dir: /tmp/template
+survey_j2: survey_spec.json.j2
+survey_file: remove_vm_survey.json
+student_user: student
+student_password: learn_ansible

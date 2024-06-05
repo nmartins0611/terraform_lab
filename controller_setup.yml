@@ -1,0 +1,292 @@
+## Controller setup
+- name: Controller config for Terraform-Ansible
+  hosts: controller.acme.example.com
+  gather_facts: true
+    
+  tasks:
+   # Create auth login token
+    - name: get auth token and restart automation-controller if it fails
+      block:
+        - name: Refresh facts
+          setup:
+
+        - name: Create oauth token
+          awx.awx.token:
+            description: 'Instruqt lab'
+            scope: "write"
+            state: present
+            controller_host: controller
+            controller_username: "{{ controller_admin_user }}"
+            controller_password: "{{ controller_admin_password }}"
+            validate_certs: false
+          register: _auth_token
+          until: _auth_token is not failed
+          delay: 3
+          retries: 5
+      rescue:
+        - name: In rescue block for auth token
+          debug:
+            msg: "failed to get auth token. Restarting automation controller service"
+
+        - name: restart the controller service
+          ansible.builtin.service:
+            name: automation-controller
+            state: restarted
+
+        - name: Ensure tower/controller is online and working
+          uri:
+            url: https://localhost/api/v2/ping/
+            method: GET
+            user: "{{ admin_username }}"
+            password: "{{ admin_password }}"
+            validate_certs: false
+            force_basic_auth: true
+          register: controller_online
+          until: controller_online is success
+          delay: 3
+          retries: 5
+
+        - name: Retry getting auth token
+          awx.awx.token:
+            description: 'Instruqt lab'
+            scope: "write"
+            state: present
+            controller_host: controller
+            controller_username: "{{ controller_admin_user }}"
+            controller_password: "{{ controller_admin_password }}"
+            validate_certs: false
+          register: _auth_token
+          until: _auth_token is not failed
+          delay: 3
+          retries: 5
+      always:
+        - name: Create fact.d dir
+          ansible.builtin.file:
+            path: "{{ custom_facts_dir }}"
+            state: directory
+            recurse: yes
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+            mode: 0755
+          become: true
+
+        - name: Create _auth_token custom fact
+          ansible.builtin.copy:
+            content: "{{ _auth_token.ansible_facts }}"
+            dest: "{{ custom_facts_dir }}/{{ custom_facts_file }}"
+            owner: "{{ ansible_user }}"
+            group: "{{ ansible_user }}"
+            mode: 0644
+          become: true
+      check_mode: false
+      when: ansible_local.custom_facts.controller_token is undefined
+      tags:
+        - auth-token
+
+    - name: refresh facts
+      setup:
+        filter:
+          - ansible_local
+      tags:
+        - always
+
+    - name: create auth token fact
+      ansible.builtin.set_fact:
+        auth_token: "{{ ansible_local.custom_facts.controller_token }}"
+        cacheable: true
+      check_mode: false
+      when: auth_token is undefined
+      tags:
+        - always
+ 
+    - name: Ensure tower/controller is online and working
+      uri:
+        url: https://localhost/api/v2/ping/
+        method: GET
+        user: "{{ admin_username }}"
+        password: "{{ admin_password }}"
+        validate_certs: false
+        force_basic_auth: true
+      register: controller_online
+      until: controller_online is success
+      delay: 3
+      retries: 5
+      tags:
+        - controller-config
+
+# Controller objects
+    - name: Add Organization
+      awx.awx.organization:
+        name: "{{ lab_organization }}"
+        description: "ACME Corp Organization"
+        state: present
+        controller_oauthtoken: "{{ auth_token }}"
+        validate_certs: false
+      tags:
+        - controller-config
+        - controller-org
+  
+    - name: Add Instruqt Terraform EE
+      awx.awx.execution_environment:
+        name: "{{ controller_devops_ee }}"
+        image: "quay.io/nmartins/terraform_ee"
+        pull: missing
+        state: present
+        controller_oauthtoken: "{{ auth_token }}"
+        controller_host: "{{ controller_hostname }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      tags:
+        - controller-config
+        - controller-ees
+        
+#    - name: Add Instruqt Terraform EE 02
+#      awx.awx.execution_environment:
+#        name: "dev_ee_terraform"
+#        image: "quay.io/nmartins/terraform_ee"
+#        pull: missing
+#        state: present
+#        controller_oauthtoken: "{{ auth_token }}"
+#        controller_host: "{{ controller_hostname }}"
+#        validate_certs: "{{ controller_validate_certs }}"
+ #     tags:
+ #       - controller-config
+ #       - controller-ees
+
+#    - name: Pull Instruqt Terraform EE
+#      containers.podman.podman_image:
+#        name: "quay.io/acme_corp/terraform_ee"
+#      become_user: awx
+#      register: podman_pull
+#      until: podman_pull is not failed
+#      retries: 5
+#      delay: 15 
+#      tags:
+#        - controller-config
+#        - controller-ees
+
+    - name: Add the lab ssh credential
+      awx.awx.credential:
+        name: "Terraform_instances"
+        organization: "{{ lab_organization }}"
+        credential_type: Machine
+        inputs:
+          username: ec2-user
+          become_username: root
+          become_method: sudo
+          ssh_key_data: "{{ lookup('file', '/home/rhel/.ssh/id_rsa') }}"
+        controller_oauthtoken: "{{ auth_token }}"
+        validate_certs: false
+      tags:
+        - controller-config
+        - controller-objects
+
+    - name: Add aws credentials
+      awx.awx.credential:
+        name: "AWS"
+        organization: "{{ lab_organization }}"
+        credential_type: "Amazon Web Services"
+        inputs:
+          username: "{{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') }}"
+          password: "{{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') }}"
+        controller_oauthtoken: "{{ auth_token }}"
+        validate_certs: false
+
+    - name: Add the lab project
+      awx.awx.project:
+        name: "{{ lab_project_name }}"
+        scm_type: git
+        scm_url: "http://gitea:3000/{{ student_user }}/terraform_lab.git"
+        organization: "{{ lab_organization }}"
+        scm_update_on_launch: false
+        scm_update_cache_timeout: 60
+        scm_branch: "main"
+        controller_oauthtoken: "{{ auth_token }}"
+        validate_certs: false
+      tags:
+        - controller-config
+        - controller-project
+
+    - name: Add aws inventories
+      awx.awx.inventory:
+        name: "{{ item.name }}"
+        description: "{{ item.description }}"
+        organization: "{{ lab_organization }}"
+        state: present
+        controller_oauthtoken: "{{ auth_token }}"
+        validate_certs: false
+      loop: "{{ lab_inventories }}"
+      tags:
+        - controller-config
+        - controller-objects
+
+    - name: Add an inventory source
+      awx.awx.inventory_source:
+        name: "aws-source"
+        description: AWS inventory source
+        inventory: "ACME AWS"
+        credential: "AWS"
+        overwrite: True
+        update_on_launch: True
+        organization: "ACME Corp"
+        source: ec2
+        source_vars:
+          region:
+            - us-east-1
+          compose:
+            ansible_host: public_ip_address
+        controller_oauthtoken: "{{ auth_token }}"
+        validate_certs: false
+      tags:
+        - inv
+
+    - name: Create create job templates
+      awx.awx.job_template:
+        name: "Deploy Instance with Terraform"
+        state: present
+        execution_environment: "ACME Terraform EE"
+        project: "{{ lab_project_name }}"
+        credential: "{{ tf_lab_credential_name }}"
+        inventory: "{{  tf_inventory }}"
+        playbook: "{{ tf_playbook }}"
+        controller_oauthtoken: "{{ auth_token }}"
+        validate_certs: false
+
+    - name: Create create Update templates
+      awx.awx.job_template:
+        name: "Update and Install Web"
+        state: present
+        execution_environment: "ACME Terraform EE"
+        project: "{{ lab_project_name }}"
+        credential: "Terraform_instances"
+        inventory: "{{  tf_inventory }}"
+        playbook: "rhel_update.yml"
+        controller_oauthtoken: "{{ auth_token }}"
+        become_enabled: yes
+        validate_certs: false
+
+    - name: Create remove job templates
+      awx.awx.job_template:
+        name: "Destroy Instance"
+        state: present
+        execution_environment: "ACME Terraform EE"
+        project: "{{ lab_project_name }}"
+        credential: "{{ tf_lab_credential_name }}"
+        inventory: "{{  tf_inventory }}"
+        playbook: "{{ tf_remove_playbook }}"
+        controller_oauthtoken: "{{ auth_token }}"
+        validate_certs: false
+
+    - name: Create student admin user
+      awx.awx.user:
+        superuser: true
+        username: "{{ student_user }}"
+        password: "{{ student_password }}"
+        email: student@acme.example.com
+        controller_oauthtoken: "{{ auth_token }}"
+        controller_host: "{{ controller_hostname }}"
+        validate_certs: "{{ controller_validate_certs }}"
+      tags:
+        - controller-config
+        - controller-users
+
+        
