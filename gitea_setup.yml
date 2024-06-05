@@ -91,7 +91,7 @@
 
     - name: Extract initial repo files
       ansible.builtin.unarchive:
-        src: /tmp/terraform-ansible/images/ansible/setup-scripts/terraform-ansible/files/terraform_files.tar.gz
+        src: /tmp/terraform-ansible/files/terraform_files.tar.gz
         dest: "/tmp/terraform_lab/"
 
     - name: Grab the rsa
